@@ -11,15 +11,22 @@
 #include <vespa/fnet/frt/require_capabilities.h>
 #include <vespa/fnet/frt/rpcrequest.h>
 #include <vespa/fnet/frt/supervisor.h>
+#include <vespa/opentelemetry/proto_telemetry_carrier.h>
 #include <vespa/searchlib/common/packets.h>
 #include <vespa/vespalib/data/databuffer.h>
 #include <vespa/vespalib/util/compressor.h>
+
+#include <opentelemetry/context/propagation/global_propagator.h>
+#include <opentelemetry/context/runtime_context.h>
+#include <opentelemetry/trace/provider.h>
+#include <opentelemetry/trace/span_metadata.h>
 
 #include <vespa/log/log.h>
 LOG_SETUP(".engine.proto_rpc_adapter");
 
 namespace search::engine {
 
+using vespa_opentelemetry::ProtoTelemetryCarrier;
 using vespalib::ConstBufferRef;
 using vespalib::DataBuffer;
 using vespalib::compression::CompressionConfig;
@@ -33,6 +40,8 @@ using QueryStats = SearchProtocolMetrics::QueryStats;
 using DocsumStats = SearchProtocolMetrics::DocsumStats;
 
 namespace {
+
+const std::string proton_rpc_server("proton rpc server");
 
 CompressionConfig get_compression_config() {
     using search::fs4transport::FS4PersistentPacketStreamer;
@@ -93,7 +102,27 @@ struct SearchRequestDecoder : SearchRequest::Source::Decoder {
         stats.request_size = (*rpc.GetParams())[2]._data._len;
         if (!decode_message(*rpc.GetParams(), msg)) {
             LOG(warning, "got bad protobuf search request over rpc (unable to decode)");
-            return std::unique_ptr<SearchRequest>(nullptr);
+            return {};
+        }
+        // Note: Decoding here is delayed
+        ProtoTelemetryCarrier                          carrier(msg.metadata().trace_context());
+        std::optional<opentelemetry::context::Context> request_context;
+        if (!carrier.empty()) {
+            auto propagator = opentelemetry::context::propagation::GlobalTextMapPropagator::GetGlobalPropagator();
+            auto current_context = opentelemetry::context::RuntimeContext::GetCurrent();
+            request_context.emplace(propagator->Extract(carrier, current_context));
+        }
+        if (request_context.has_value()) {
+            auto provider = opentelemetry::trace::Provider::GetTracerProvider();
+            auto tracer = provider->GetTracer(proton_rpc_server);
+
+            opentelemetry::trace::StartSpanOptions options;
+            options.kind = opentelemetry::trace::SpanKind::kServer;
+            options.parent = opentelemetry::trace::GetSpan(request_context.value())->GetContext();
+
+            auto server_span = tracer->StartSpan("vespa.searchprotocol.search", options);
+            auto scope = tracer->WithActiveSpan(server_span);
+            server_span->End();
         }
         auto req = std::make_unique<SearchRequest>(std::move(relative_time));
         ProtoConverter::search_request_from_proto(msg, *req);
@@ -139,6 +168,26 @@ struct DocsumRequestDecoder : DocsumRequest::Source::Decoder {
         if (!decode_message(*rpc.GetParams(), msg)) {
             LOG(warning, "got bad protobuf docsum request over rpc (unable to decode)");
             return std::unique_ptr<DocsumRequest>(nullptr);
+        }
+        // Note: Decoding here is delayed
+        ProtoTelemetryCarrier                          carrier(msg.metadata().trace_context());
+        std::optional<opentelemetry::context::Context> request_context;
+        if (!carrier.empty()) {
+            auto propagator = opentelemetry::context::propagation::GlobalTextMapPropagator::GetGlobalPropagator();
+            auto current_context = opentelemetry::context::RuntimeContext::GetCurrent();
+            request_context.emplace(propagator->Extract(carrier, current_context));
+        }
+        if (request_context.has_value()) {
+            auto provider = opentelemetry::trace::Provider::GetTracerProvider();
+            auto tracer = provider->GetTracer(proton_rpc_server);
+
+            opentelemetry::trace::StartSpanOptions options;
+            options.kind = opentelemetry::trace::SpanKind::kServer;
+            options.parent = opentelemetry::trace::GetSpan(request_context.value())->GetContext();
+
+            auto server_span = tracer->StartSpan("vespa.searchprotocol.getDocsums", options);
+            auto scope = tracer->WithActiveSpan(server_span);
+            server_span->End();
         }
         stats.requested_documents = msg.global_ids_size();
         auto req = std::make_unique<DocsumRequest>(std::move(relative_time));
@@ -260,6 +309,26 @@ void ProtoRpcAdapter::rpc_ping(FRT_RPCRequest* rpc) {
     rpc->Detach();
     ProtoMonitorRequest msg;
     if (decode_message(*rpc->GetParams(), msg)) {
+        // Note: Decoding here is delayed
+        ProtoTelemetryCarrier                          carrier(msg.metadata().trace_context());
+        std::optional<opentelemetry::context::Context> request_context;
+        if (!carrier.empty()) {
+            auto propagator = opentelemetry::context::propagation::GlobalTextMapPropagator::GetGlobalPropagator();
+            auto current_context = opentelemetry::context::RuntimeContext::GetCurrent();
+            request_context.emplace(propagator->Extract(carrier, current_context));
+        }
+        if (request_context.has_value()) {
+            auto provider = opentelemetry::trace::Provider::GetTracerProvider();
+            auto tracer = provider->GetTracer(proton_rpc_server);
+
+            opentelemetry::trace::StartSpanOptions options;
+            options.kind = opentelemetry::trace::SpanKind::kServer;
+            options.parent = opentelemetry::trace::GetSpan(request_context.value())->GetContext();
+
+            auto server_span = tracer->StartSpan("vespa.searchprotocol.ping", options);
+            auto scope = tracer->WithActiveSpan(server_span);
+            server_span->End();
+        }
         auto req = std::make_unique<MonitorRequest>();
         ProtoConverter::monitor_request_from_proto(msg, *req);
         auto& client = rpc->getStash().create<PingCompletionHandler>(*rpc);

@@ -33,6 +33,10 @@ import com.yahoo.searchlib.aggregation.FS4Hit;
 import com.yahoo.searchlib.aggregation.Grouping;
 import com.yahoo.slime.BinaryFormat;
 import com.yahoo.vespa.objects.BufferSerializer;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapSetter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -104,6 +108,7 @@ public class ProtobufSerialization {
         }
 
         mergeToSearchRequestFromRanking(query.getRanking(), context, scratchPad, builder);
+        mergeToSearchRequestFromTracing(builder);
 
         return builder.build();
     }
@@ -167,6 +172,34 @@ public class ProtobufSerialization {
         }
     }
 
+    private static void mergeToSearchRequestFromTracing(SearchProtocol.SearchRequest.Builder builder) {
+        var metadataBuilder = createTelemetryMetadataBuilder();
+        if (metadataBuilder != null) {
+            builder.setMetadata(metadataBuilder);
+        }
+    }
+
+    private static SearchProtocol.TelemetryMetadata.Builder createTelemetryMetadataBuilder() {
+        var context = Context.current();
+        var span = Span.fromContext(context);
+        if (!span.isRecording()) {
+            return null;
+        }
+        var metadataBuilder = SearchProtocol.TelemetryMetadata.newBuilder();
+
+        GlobalOpenTelemetry.getPropagators()
+            .getTextMapPropagator()
+            .inject(context, metadataBuilder, SetTraceContext);
+        return metadataBuilder;
+    }
+
+    private static final TextMapSetter<SearchProtocol.TelemetryMetadata.Builder> SetTraceContext =
+        (builder, key, value) -> {
+            if (builder != null) {
+                builder.putTraceContext(key, value);
+            }
+        };
+
     static SearchProtocol.DocsumRequest.Builder createDocsumRequestBuilder(Query query,
                                                                            String serverId,
                                                                            String summaryClass,
@@ -206,6 +239,7 @@ public class ProtobufSerialization {
         if (query.getTrace().getLevel() >= 3) {
             query.trace((includeQueryData ? "ProtoBuf: Resending " : "Not resending ") + "query during document summary fetching", 3);
         }
+        mergeToDocsumRequestFromTracing(builder);
 
         return builder;
     }
@@ -216,6 +250,13 @@ public class ProtobufSerialization {
             builder.addGlobalIds(ByteString.copyFrom(hit.getRawGlobalId()));
         }
         return builder.build().toByteArray();
+    }
+
+    private static void mergeToDocsumRequestFromTracing(SearchProtocol.DocsumRequest.Builder builder) {
+        var metadataBuilder = createTelemetryMetadataBuilder();
+        if (metadataBuilder != null) {
+            builder.setMetadata(metadataBuilder);
+        }
     }
 
     private static void mergeQueryDataToDocsumRequest(Query query,
@@ -353,6 +394,15 @@ public class ProtobufSerialization {
                 stringProperties.accept(propB);
             }
         }, tensorProperties);
+    }
+
+    static SearchProtocol.MonitorRequest.Builder createMonitorRequestBuilder() {
+        var builder = SearchProtocol.MonitorRequest.newBuilder();
+        var metadataBuilder = createTelemetryMetadataBuilder();
+        if (metadataBuilder != null) {
+            builder.setMetadata(metadataBuilder);
+        }
+        return builder;
     }
 
 }
