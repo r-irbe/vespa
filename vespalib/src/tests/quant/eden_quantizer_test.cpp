@@ -9,7 +9,6 @@
 #include <gmock/gmock.h>
 
 #include <cmath>
-#include <format>
 #include <random>
 #include <ranges>
 #include <span>
