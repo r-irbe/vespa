@@ -81,7 +81,11 @@ class HttpRequestStrategy implements RequestStrategy {
     private final AtomicBoolean reset = new AtomicBoolean(false);
 
     HttpRequestStrategy(FeedClientBuilderImpl builder, ClusterFactory clusterFactory) throws IOException {
-        this.throttler = new DynamicThrottler(builder);
+        this(builder, clusterFactory, new DynamicThrottler(builder));
+    }
+
+    HttpRequestStrategy(FeedClientBuilderImpl builder, ClusterFactory clusterFactory, Throttler throttler) throws IOException {
+        this.throttler = throttler;
         this.resettableCluster = new ResettableCluster(clusterFactory);
         this.cluster = builder.benchmark ? new BenchmarkingCluster(resettableCluster, throttler, System::nanoTime) : resettableCluster;
         this.strategy = builder.retryStrategy;
@@ -219,12 +223,14 @@ class HttpRequestStrategy implements RequestStrategy {
                            ") on attempt " + attempt + " at " + request);
     }
 
-    private void acquireSlot() {
+    private boolean acquireSlot() {
         try {
-            while (inflight.get() >= throttler.targetInflight())
+            while (!destroyed.get() && inflight.get() >= throttler.targetInflight())
                 Thread.sleep(1);
 
+            if (destroyed.get()) return false;
             inflight.incrementAndGet();
+            return true;
         }
         catch (InterruptedException e) {
             throw new RuntimeException(e);
@@ -290,7 +296,11 @@ class HttpRequestStrategy implements RequestStrategy {
         CompletableFuture<HttpResponse> vessel = new CompletableFuture<>(); // Holds the computation of a single dispatch to the HTTP client.
         RetriableFuture<HttpResponse> previous = inflightById.put(documentId, result);
         if (previous == null) {
-            acquireSlot();
+            if (!acquireSlot()) {
+                inflightById.remove(documentId, result);
+                result.complete();
+                return result;
+            }
             offer(request, vessel);
             throttler.sent(inflight.get(), result);
         }

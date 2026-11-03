@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Exchanger;
 import java.util.concurrent.ExecutionException;
@@ -188,6 +189,60 @@ class HttpRequestStrategyTest {
         assertSame(injected, assertThrows(CompletionException.class, strategy::destroy).getCause());
         accountingWorker.get().join(1000);
         assertFalse(accountingWorker.get().isAlive(), "reset accounting worker must terminate despite transport close failure");
+    }
+
+    @Test
+    void capacityWaiterCannotAcquireOrOfferAfterAbort() throws Exception {
+        // A waiter already registered before abort must not acquire a new slot after cleanup.
+        CountDownLatch capacityEntered = new CountDownLatch(1);
+        CountDownLatch releaseCapacity = new CountDownLatch(1);
+        CountDownLatch dispatched = new CountDownLatch(2);
+        AtomicReference<Thread> waiterThread = new AtomicReference<>();
+        AtomicBoolean pause = new AtomicBoolean(true);
+        AtomicInteger sent = new AtomicInteger();
+        Throttler throttler = new FixedThrottler() {
+            @Override public long targetInflight() {
+                if (Thread.currentThread() == waiterThread.get() && pause.compareAndSet(true, false)) {
+                    capacityEntered.countDown();
+                    try { assertTrue(releaseCapacity.await(10, TimeUnit.SECONDS)); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                }
+                return 2;
+            }
+            @Override public void sent(long inflight, CompletableFuture<HttpResponse> response) { sent.incrementAndGet(); }
+        };
+        List<CompletableFuture<HttpResponse>> responses = new CopyOnWriteArrayList<>();
+        Cluster cluster = new Cluster() {
+            @Override public void dispatch(HttpRequest request, CompletableFuture<HttpResponse> vessel) {
+                responses.add(vessel);
+                dispatched.countDown();
+            }
+            @Override public void close() {
+                responses.forEach(response -> response.completeExceptionally(new FeedException("transport stopped")));
+            }
+        };
+        HttpRequestStrategy strategy = new HttpRequestStrategy(
+                new FeedClientBuilderImpl(List.of(URI.create("https://dummy.com:123"))), () -> cluster, throttler);
+        HttpRequest request = new HttpRequest("DELETE", "/", "", null, null, Duration.ofSeconds(1), () -> 0);
+        strategy.enqueue(DocumentId.of("ns", "type", "1"), request);
+        strategy.enqueue(DocumentId.of("ns", "type", "2"), request);
+        assertTrue(dispatched.await(10, TimeUnit.SECONDS));
+        AtomicReference<CompletableFuture<HttpResponse>> waitingResult = new AtomicReference<>();
+        Thread waiter = new Thread(() -> {
+            waiterThread.set(Thread.currentThread());
+            waitingResult.set(strategy.enqueue(DocumentId.of("ns", "type", "3"), request));
+        });
+        waiter.start();
+        try {
+            assertTrue(capacityEntered.await(10, TimeUnit.SECONDS));
+            strategy.destroy();
+        } finally {
+            releaseCapacity.countDown();
+            waiter.join(10000);
+        }
+        assertFalse(waiter.isAlive());
+        assertThrows(ExecutionException.class, () -> waitingResult.get().get(10, TimeUnit.SECONDS));
+        assertEquals(2, sent.get(), "aborted capacity waiter must not acquire and offer a new slot");
     }
 
     @Test
@@ -484,6 +539,13 @@ class HttpRequestStrategyTest {
                      assertThrows(ExecutionException.class, retried::get).getMessage());
         assertEquals("ai.vespa.feed.client.FeedException: Operation aborted",
                      assertThrows(ExecutionException.class, strategy.enqueue(id1, request)::get).getMessage());
+    }
+
+    private static class FixedThrottler implements Throttler {
+        @Override public void sent(long inflight, CompletableFuture<HttpResponse> response) { }
+        @Override public void success() { }
+        @Override public void throttled(long inflight) { }
+        @Override public long targetInflight() { return 2; }
     }
 
     static class MockCluster implements Cluster {

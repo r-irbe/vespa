@@ -89,7 +89,7 @@ for those strategies, and no omission is approved by this document.
 ## Implementation evidence so far
 
 These are incremental module results, not a completed implementation or a full
-Vespa validation claim. The latest serial API/client/CLI reactor run passed 51
+Vespa validation claim. The latest serial API/client/CLI reactor run passed 52
 tests with no skipped tests. Existing JVM incubator-module warnings remain.
 
 | Demonstrated failure | Change and reason |
@@ -103,6 +103,7 @@ tests with no skipped tests. Existing JVM incubator-module warnings remain.
 | Concurrent destroy returned before the first caller finished cleanup | Share the strategy cleanup outcome among callers. |
 | A transport-close exception left result or reset-accounting workers alive | Attempt remaining executor cleanup even when transport close throws. |
 | Successful shutdown could be reported while the dispatcher still ran | Join the dispatcher after shared resource cleanup, avoiding self-join. |
+| A registered capacity waiter acquired a slot after abort cleanup | Stop capacity acquisition on abort and discharge the unacquired registration. Atomic registry/slot handoffs still require further validation. |
 | The inner dispatcher loop sent queued work after abort | Check abort before selecting the next queued request. |
 | Public snapshots accepted contradictory outcomes and counts | Validate failure/phase consistency and ownership invariants at construction. |
 
