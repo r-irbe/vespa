@@ -487,23 +487,27 @@ void verify_eden_f32_q_dot_product_no_lane_confusion(std::span<const IAccelerate
 
     std::vector<float>   lhs(test_length);
     std::vector<uint8_t> rhs_idx(test_length);
-    const uint8_t        highest_centroid_idx = (1u << bits) - 1; // also has the highest centroid _value_
-    std::ranges::fill(rhs_idx, highest_centroid_idx);
-
+    constexpr uint8_t    lowest_centroid_idx = 0;                 // also has the lowest negative centroid _value_
+    const uint8_t        highest_centroid_idx = (1u << bits) - 1; // also has the highest positive centroid _value_
+    std::ranges::fill(rhs_idx, lowest_centroid_idx);
     std::vector<uint8_t> packed(packed_bytes(bits, test_length));
-    bit_pack_reference_output(rhs_idx.data(), packed.data(), bits, test_length);
 
     const float c = codebook[highest_centroid_idx];
     const float expected = 100.0f * c;
     for (size_t i = 0; i < test_length; ++i) {
-        // Only have a non-zero f32 element in a single position. The full dot product
-        // should then always be equal to that value*the matching centroid value.
+        // Only have a non-zero f32 element and a positive centroid index in a single position.
+        // The dot product should then always be equal to that value*the matching highest
+        // centroid value.
         lhs[i] = 100.0f;
+        rhs_idx[i] = highest_centroid_idx;
+
+        bit_pack_reference_output(rhs_idx.data(), packed.data(), bits, test_length);
         ASSERT_NO_FATAL_FAILURE(check_f32_q_dot_product_eq(accels, lhs, packed, bits, test_length, expected));
         // Conversely, zeroing out this position should result in a dot product of zero.
         // This also conveniently leaves us with an all-zero vector for the next iteration.
         lhs[i] = 0.0f;
         ASSERT_NO_FATAL_FAILURE(check_f32_q_dot_product_eq(accels, lhs, packed, bits, test_length, 0));
+        rhs_idx[i] = lowest_centroid_idx; // Reset for next position iteration
     }
 }
 
