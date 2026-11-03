@@ -58,6 +58,8 @@ class HttpFeedClient implements FeedClient {
     private final Map<String, Supplier<String>> requestHeaders;
     private final RequestStrategy requestStrategy;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object lifecycle = new Object();
+    private int pendingAdmissions;
     private final boolean speedTest;
     private final LongSupplier nanoClock;
 
@@ -116,7 +118,16 @@ class HttpFeedClient implements FeedClient {
 
     @Override
     public void close(boolean graceful) {
-        closed.set(true);
+        synchronized (lifecycle) {
+            closed.set(true);
+            while (graceful && pendingAdmissions > 0) {
+                try { lifecycle.wait(); }
+                catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new FeedException("Interrupted waiting for admitted operations", e);
+                }
+            }
+        }
         if (graceful)
             requestStrategy.await();
 
@@ -124,33 +135,42 @@ class HttpFeedClient implements FeedClient {
     }
 
     private CompletableFuture<Result> send(String method, DocumentId documentId, String operationJson, OperationParameters params) {
-        if (closed.get())
-            throw new IllegalStateException("Client is closed");
+        synchronized (lifecycle) {
+            if (closed.get()) throw new IllegalStateException("Client is closed");
+            pendingAdmissions++;
+        }
+        try {
 
-        HttpRequest request = new HttpRequest(method,
-                                              getPath(documentId),
-                                              getQuery(params, speedTest),
-                                              requestHeaders,
-                                              operationJson == null ? null : operationJson.getBytes(UTF_8), // TODO: make it bytes all the way?
-                                              params.timeout().orElse(maxTimeout),
-                                              nanoClock);
+            HttpRequest request = new HttpRequest(method,
+                                                  getPath(documentId),
+                                                  getQuery(params, speedTest),
+                                                  requestHeaders,
+                                                  operationJson == null ? null : operationJson.getBytes(UTF_8), // TODO: make it bytes all the way?
+                                                  params.timeout().orElse(maxTimeout),
+                                                  nanoClock);
 
-        CompletableFuture<Result> promise = new CompletableFuture<>();
-        requestStrategy.enqueue(documentId, request)
-                       .thenApply(response -> toResult(request, response, documentId))
-                       .whenComplete((result, thrown) -> {
-                           if (thrown != null) {
-                               while (thrown instanceof CompletionException)
-                                   thrown = thrown.getCause();
-                               var finalThrown = thrown;
-                               log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s failed: %s", request, finalThrown));
-                               promise.completeExceptionally(thrown);
-                           } else {
-                               log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s completed successfully: %s", request, result));
-                               promise.complete(result);
-                           }
-                       });
-        return promise;
+            CompletableFuture<Result> promise = new CompletableFuture<>();
+            requestStrategy.enqueue(documentId, request)
+                           .thenApply(response -> toResult(request, response, documentId))
+                           .whenComplete((result, thrown) -> {
+                               if (thrown != null) {
+                                   while (thrown instanceof CompletionException)
+                                       thrown = thrown.getCause();
+                                   var finalThrown = thrown;
+                                   log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s failed: %s", request, finalThrown));
+                                   promise.completeExceptionally(thrown);
+                               } else {
+                                   log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s completed successfully: %s", request, result));
+                                   promise.complete(result);
+                               }
+                           });
+            return promise;
+        } finally {
+            synchronized (lifecycle) {
+                pendingAdmissions--;
+                lifecycle.notifyAll();
+            }
+        }
     }
 
     private void verifyConnection(FeedClientBuilderImpl builder, ClusterFactory clusterFactory) throws IOException {
