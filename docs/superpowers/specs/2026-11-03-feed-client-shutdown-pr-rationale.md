@@ -89,7 +89,7 @@ for those strategies, and no omission is approved by this document.
 ## Implementation evidence so far
 
 These are incremental module results, not a completed implementation or a full
-Vespa validation claim. The latest serial API/client/CLI reactor run passed 50
+Vespa validation claim. The latest serial API/client/CLI reactor run passed 51
 tests with no skipped tests. Existing JVM incubator-module warnings remain.
 
 | Demonstrated failure | Change and reason |
@@ -110,7 +110,12 @@ Confirmation tests cover observer interruption, synchronous construction failure
 and caller cancellation without erasing underlying transport ownership. An isolated
 mutation removing the internal-resolution condition from ownership pruning was
 caught by the cancellation test; the original source was restored and the reactor
-passed again. This is one mutation experiment, not a mutation-score claim.
+passed again. A second mutation permitting abort-to-graceful reversal was caught
+by both the focused escalation test and generated state-machine histories. All
+mutants were restored before normal verification. The generated test runs 64
+fixed seeds with 100 commands each and reports the complete command/index history
+on failure. This is sequential component evidence, not concurrent/JVM stress or a
+mutation-score claim.
 
 The operator approved serial verification on the saturated shared host and deferred
 performance measurements. The retained impact protocol compares distinct-ID and
