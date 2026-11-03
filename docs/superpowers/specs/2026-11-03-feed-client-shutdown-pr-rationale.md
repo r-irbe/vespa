@@ -85,3 +85,40 @@ causal deterministic tests alongside timing-variable integration evidence. Asses
 JVM memory-order stress, heap/thread/socket retention and latency/throughput impact
 with the agreed per-PR applicability process. Fault injection is not a substitute
 for those strategies, and no omission is approved by this document.
+
+## Implementation evidence so far
+
+These are incremental module results, not a completed implementation or a full
+Vespa validation claim. The latest serial API/client/CLI reactor run passed 50
+tests with no skipped tests. Existing JVM incubator-module warnings remain.
+
+| Demonstrated failure | Change and reason |
+| --- | --- |
+| Graceful close destroyed the strategy during admitted request construction | Order admission against close and retain construction responsibility. Reproduced on the captured baseline and recorded upstream revision. |
+| Mapping outlived strategy completion | Track ownership through public result publication, independently from capacity. |
+| A result callback, cleanup owner, dispatcher or result-policy callback could wait on its own shutdown | Reject progress-owner waits by actual thread identity and publication context while allowing independent observation. |
+| Abort could certify termination while admitted construction remained held | Start abort cleanup promptly, then retain responsibility until admitted work resolves. |
+| Graceful strategy waiting ignored escalation | Make the drain wait observe the shared graceful/abort state. |
+| Reset accounting needed a monitor held by executor teardown waiting | Wait for executor termination outside that monitor. |
+| Concurrent destroy returned before the first caller finished cleanup | Share the strategy cleanup outcome among callers. |
+| A transport-close exception left result or reset-accounting workers alive | Attempt remaining executor cleanup even when transport close throws. |
+| Successful shutdown could be reported while the dispatcher still ran | Join the dispatcher after shared resource cleanup, avoiding self-join. |
+| The inner dispatcher loop sent queued work after abort | Check abort before selecting the next queued request. |
+| Public snapshots accepted contradictory outcomes and counts | Validate failure/phase consistency and ownership invariants at construction. |
+
+Confirmation tests cover observer interruption, synchronous construction failure,
+and caller cancellation without erasing underlying transport ownership. An isolated
+mutation removing the internal-resolution condition from ownership pruning was
+caught by the cancellation test; the original source was restored and the reactor
+passed again. This is one mutation experiment, not a mutation-score claim.
+
+The operator approved serial verification on the saturated shared host and deferred
+performance measurements. The retained impact protocol compares distinct-ID and
+same-ID workloads at low and saturated load, reporting throughput, submission and
+shutdown latency, allocation, and retained resources. A repeatable throughput or
+p95 submission-latency regression above 5% requires operator review. No performance
+acceptance conclusion has been drawn.
+
+Still required: remaining strategy handoffs and cleanup-failure combinations,
+independent bounded diagnostics, broader generated/mutation and resource evidence,
+full-project validation, final independent review, and garden evidence curation.

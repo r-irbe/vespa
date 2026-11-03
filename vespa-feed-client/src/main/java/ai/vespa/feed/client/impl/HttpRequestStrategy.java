@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
 import static ai.vespa.feed.client.FeedClient.CircuitBreaker.State.CLOSED;
@@ -65,10 +66,14 @@ class HttpRequestStrategy implements RequestStrategy {
     private final Queue<Runnable> queue = new ConcurrentLinkedQueue<>();
     private final AtomicLong inflight = new AtomicLong(0);
     private final AtomicBoolean destroyed = new AtomicBoolean(false);
+    private final CompletableFuture<Void> destruction = new CompletableFuture<>();
     private final AtomicLong delayedCount = new AtomicLong(0);
+    private final Thread dispatcher;
+    private volatile Thread resultThread;
     private final ExecutorService resultExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "feed-client-result-executor");
         thread.setDaemon(true);
+        resultThread = thread;
         return thread;
     });
     // TODO jonmv: remove if this has no effect
@@ -82,9 +87,15 @@ class HttpRequestStrategy implements RequestStrategy {
         this.strategy = builder.retryStrategy;
         this.breaker = builder.circuitBreaker;
 
-        Thread dispatcher = new Thread(this::dispatch, "feed-client-dispatcher");
+        dispatcher = new Thread(this::dispatch, "feed-client-dispatcher");
         dispatcher.setDaemon(true);
         dispatcher.start();
+    }
+
+    @Override
+    public boolean isProgressThread() {
+        Thread current = Thread.currentThread();
+        return current == dispatcher || current == resultThread;
     }
 
     @Override
@@ -125,6 +136,7 @@ class HttpRequestStrategy implements RequestStrategy {
     }
 
     private boolean poll() {
+        if (destroyed.get()) return false;
         Runnable task = queue.poll();
         if (task == null) return false;
         delayedCount.decrementAndGet();
@@ -223,10 +235,13 @@ class HttpRequestStrategy implements RequestStrategy {
         inflight.decrementAndGet();
     }
 
-    public void await() {
+    public void await() { await(() -> true); }
+
+    @Override
+    public void await(BooleanSupplier draining) {
         try {
-            while (inflight.get() > 0) Thread.sleep(10);
-            resettableCluster.sync();
+            while (draining.getAsBoolean() && inflight.get() > 0) Thread.sleep(10);
+            if (draining.getAsBoolean()) resettableCluster.sync();
         }
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -321,16 +336,32 @@ class HttpRequestStrategy implements RequestStrategy {
     @Override
     public void destroy() {
         if (destroyed.compareAndSet(false, true)) {
-            inflightById.values().forEach(RetriableFuture::complete);
-            cluster.close();
-            resultExecutor.shutdown();
             try {
-                if ( ! resultExecutor.awaitTermination(1, TimeUnit.MINUTES))
-                    log.log(WARNING, "Failed processing results within 1 minute");
+                inflightById.values().forEach(RetriableFuture::complete);
+                try {
+                    cluster.close();
+                } finally {
+                    resultExecutor.shutdown();
+                    try {
+                        if ( ! resultExecutor.awaitTermination(1, TimeUnit.MINUTES))
+                            log.log(WARNING, "Failed processing results within 1 minute");
+                    }
+                    catch (InterruptedException e) {
+                        log.log(WARNING, "Interrupted waiting for results to be processed");
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                destruction.complete(null);
+            } catch (Throwable failure) {
+                destruction.completeExceptionally(failure);
             }
+        }
+        destruction.join();
+        if (Thread.currentThread() != dispatcher) {
+            try { dispatcher.join(); }
             catch (InterruptedException e) {
-                log.log(WARNING, "Interrupted waiting for results to be processed");
                 Thread.currentThread().interrupt();
+                throw new FeedException("Interrupted waiting for dispatcher termination", e);
             }
         }
     }
@@ -374,9 +405,13 @@ class HttpRequestStrategy implements RequestStrategy {
 
         @Override
         public void close() {
-            synchronized (monitor) {
-                delegate.close();
-                executor.shutdown();
+            try {
+                synchronized (monitor) {
+                    try { delegate.close(); }
+                    finally { executor.shutdown(); }
+                }
+            } finally {
+                // Accounting tasks take monitor; waiting while holding it prevents termination.
                 try {
                     if ( ! executor.awaitTermination(1, TimeUnit.MINUTES))
                         log.log(WARNING, "Failed shutting down HTTP client within 1 minute");

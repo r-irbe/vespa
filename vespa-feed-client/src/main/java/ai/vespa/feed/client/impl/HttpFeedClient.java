@@ -10,6 +10,7 @@ import ai.vespa.feed.client.OperationStats;
 import ai.vespa.feed.client.Result;
 import ai.vespa.feed.client.ResultException;
 import ai.vespa.feed.client.ResultParseException;
+import ai.vespa.feed.client.ShutdownHandle;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonFactoryBuilder;
 import com.fasterxml.jackson.core.JsonParser;
@@ -30,7 +31,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -57,9 +57,7 @@ class HttpFeedClient implements FeedClient {
 
     private final Map<String, Supplier<String>> requestHeaders;
     private final RequestStrategy requestStrategy;
-    private final AtomicBoolean closed = new AtomicBoolean();
-    private final Object lifecycle = new Object();
-    private int pendingAdmissions;
+    private final ShutdownLifecycle lifecycle;
     private final boolean speedTest;
     private final LongSupplier nanoClock;
 
@@ -75,6 +73,7 @@ class HttpFeedClient implements FeedClient {
     HttpFeedClient(FeedClientBuilderImpl builder, ClusterFactory clusterFactory, RequestStrategy requestStrategy) throws IOException {
         this.requestHeaders = new HashMap<>(builder.requestHeaders);
         this.requestStrategy = requestStrategy;
+        this.lifecycle = new ShutdownLifecycle(() -> requestStrategy != null && requestStrategy.isProgressThread());
         this.speedTest = builder.speedTest;
         this.nanoClock = builder.nanoClock;
         try {
@@ -118,27 +117,49 @@ class HttpFeedClient implements FeedClient {
 
     @Override
     public void close(boolean graceful) {
-        synchronized (lifecycle) {
-            closed.set(true);
-            while (graceful && pendingAdmissions > 0) {
-                try { lifecycle.wait(); }
-                catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new FeedException("Interrupted waiting for admitted operations", e);
-                }
-            }
+        closeAsync(graceful);
+        try { lifecycle.await(); }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FeedException("Interrupted waiting for feed client shutdown", e);
         }
-        if (graceful)
-            requestStrategy.await();
+    }
 
-        requestStrategy.destroy();
+    @Override
+    public ShutdownHandle termination() { return lifecycle; }
+
+    @Override
+    public ShutdownHandle closeAsync(boolean graceful) {
+        if (lifecycle.request(graceful)) {
+            Thread worker = new Thread(this::shutdown, "feed-client-shutdown");
+            worker.start();
+        }
+        return lifecycle;
+    }
+
+    private void shutdown() {
+        lifecycle.cleanupStarted();
+        Throwable failure = null;
+        try {
+            if (lifecycle.awaitAdmissions()) {
+                requestStrategy.await(lifecycle::draining);
+                lifecycle.awaitOperations(lifecycle::draining);
+            }
+        } catch (Throwable t) { failure = t; }
+        try { requestStrategy.destroy(); }
+        catch (Throwable t) {
+            if (failure == null) failure = t;
+            else if (failure != t) failure.addSuppressed(t);
+        }
+        if (failure == null) {
+            try { lifecycle.awaitOperations(() -> true); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); failure = e; }
+        }
+        lifecycle.finish(failure);
     }
 
     private CompletableFuture<Result> send(String method, DocumentId documentId, String operationJson, OperationParameters params) {
-        synchronized (lifecycle) {
-            if (closed.get()) throw new IllegalStateException("Client is closed");
-            pendingAdmissions++;
-        }
+        ShutdownLifecycle.Operation operation = lifecycle.admit();
         try {
 
             HttpRequest request = new HttpRequest(method,
@@ -149,7 +170,6 @@ class HttpFeedClient implements FeedClient {
                                                   params.timeout().orElse(maxTimeout),
                                                   nanoClock);
 
-            CompletableFuture<Result> promise = new CompletableFuture<>();
             requestStrategy.enqueue(documentId, request)
                            .thenApply(response -> toResult(request, response, documentId))
                            .whenComplete((result, thrown) -> {
@@ -158,18 +178,18 @@ class HttpFeedClient implements FeedClient {
                                        thrown = thrown.getCause();
                                    var finalThrown = thrown;
                                    log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s failed: %s", request, finalThrown));
-                                   promise.completeExceptionally(thrown);
+                                   operation.publish(null, thrown);
                                } else {
                                    log.log(Level.FINE, () -> String.format(Locale.ROOT, "Request %s completed successfully: %s", request, result));
-                                   promise.complete(result);
+                                   operation.publish(result, null);
                                }
                            });
-            return promise;
+            return operation.result;
+        } catch (Throwable failure) {
+            operation.publish(null, failure);
+            throw failure;
         } finally {
-            synchronized (lifecycle) {
-                pendingAdmissions--;
-                lifecycle.notifyAll();
-            }
+            lifecycle.registered(operation);
         }
     }
 
