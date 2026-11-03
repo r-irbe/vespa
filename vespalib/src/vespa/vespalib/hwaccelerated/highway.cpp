@@ -488,7 +488,7 @@ HWY_NOINLINE float hwy_eden_f32_q_dot(const float* HWY_RESTRICT f32_lhs, const u
             lhs_f32_hi_hi = hn::LoadU(df32, f32_lhs + NF32 * 3);
             f32_lhs += NF32 * 4;
         } else {
-            size_t rem = meta.remaining(); // Always > 0 when `is_partial()` is true
+            size_t rem = meta.partial_count(); // Always > 0 when `is_partial()` is true
             lhs_f32_lo_lo = hn::LoadN(df32, f32_lhs + NF32 * 0, std::min(rem, NF32));
             rem -= std::min(rem, NF32);
             lhs_f32_lo_hi = rem > 0 ? hn::LoadN(df32, f32_lhs + NF32 * 1, std::min(rem, NF32)) : hn::Zero(df32);
@@ -496,7 +496,7 @@ HWY_NOINLINE float hwy_eden_f32_q_dot(const float* HWY_RESTRICT f32_lhs, const u
             lhs_f32_hi_lo = rem > 0 ? hn::LoadN(df32, f32_lhs + NF32 * 2, std::min(rem, NF32)) : hn::Zero(df32);
             rem -= std::min(rem, NF32);
             lhs_f32_hi_hi = rem > 0 ? hn::LoadN(df32, f32_lhs + NF32 * 3, std::min(rem, NF32)) : hn::Zero(df32);
-            f32_lhs += meta.remaining();
+            f32_lhs += meta.partial_count();
         }
         accu0 = hn::MulAdd(lhs_f32_lo_lo, rhs_f32_lo_lo, accu0);
         accu1 = hn::MulAdd(lhs_f32_lo_hi, rhs_f32_lo_hi, accu1);
