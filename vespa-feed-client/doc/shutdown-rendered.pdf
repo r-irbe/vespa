@@ -1,0 +1,49 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 462 >>
+stream
+BT
+/F1 18 Tf
+50 760 Td
+(Vespa feed-client shutdown) Tj
+0 -28 Td
+/F1 11 Tf
+(Implementation record for the Java shutdown contribution.) Tj
+0 -18 Td
+(This document describes ownership tracking, abort escalation, cleanup sequencing,) Tj
+0 -18 Td
+(and the failure modes V01-V16 identified during shutdown review.) Tj
+0 -24 Td
+(Design decisions include a shared lifecycle monitor, tracked operations, one cleanup) Tj
+0 -18 Td
+(worker, and read-only shutdown handles so observers do not cancel shared shutdown.) Tj
+0 -24 Td
+(Review and rerun: mvn -pl vespa-feed-client-api,vespa-feed-client,vespa-feed-client-cli -am test) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000094 00000 n 
+0000000156 00000 n 
+0000000263 00000 n 
+0000000398 00000 n 
+0000000687 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+0735
+%%EOF
