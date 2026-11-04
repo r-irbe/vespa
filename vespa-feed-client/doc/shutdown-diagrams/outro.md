@@ -25,4 +25,4 @@ mvn -pl vespa-feed-client-api,vespa-feed-client,vespa-feed-client-cli -am test
 
 For individual ordering tests, use the method names beside each case. Keep the baseline failure, changed-version result and environment together. Extend the held-dependency cases with real HTTP delays, connection resets, same-ID chains and combined cleanup failures before treating this as ready for production.
 
-The [diagram instructions](diagrams/README.md) reproduce the compact PNGs from their p5.js source.
+The [diagram instructions](shutdown-diagrams/README.md) reproduce the compact PNGs from their p5.js source.

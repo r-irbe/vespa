@@ -80,7 +80,7 @@ for(const match of md.matchAll(/\]\(([^)]+)\)/g)){
  const target=match[1].split('#')[0];
  if(target&&!/^https?:/.test(target))await fs.access(path.resolve(dir,'..',target));
 }
-await fs.writeFile(path.join(dir,'../FAILURE-MODES.md'),md);
+await fs.writeFile(path.join(dir,'../shutdown.md'),md);
 await fs.writeFile(path.join(dir,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
 const pngs=(await fs.readdir(path.join(dir,'images'))).filter(f=>f.endsWith('.png')).sort();
 assert.deepEqual(pngs,cases.map(c=>c.id+'.png').sort());

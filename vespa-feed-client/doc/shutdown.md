@@ -64,7 +64,7 @@ try {
 }
 ```
 
-![Close overtakes admitted request construction: Send passes open check → Construction pauses → Close destroys strategy; Record admission → Wait for registration → Then drain strategy](diagrams/images/V01.png)
+![Close overtakes admitted request construction: Send passes open check → Construction pauses → Close destroys strategy; Record admission → Wait for registration → Then drain strategy](shutdown-diagrams/images/V01.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `gracefulCloseWaitsForAdmittedConstruction`.
 
@@ -83,7 +83,7 @@ if (failure == null)
 lifecycle.finish(failure);
 ```
 
-![Abort reports completion while construction is held: Construction held → Abort cleans strategy → Success reported early; Start abort cleanup → Retain held operation → Finish after resolution](diagrams/images/V02.png)
+![Abort reports completion while construction is held: Construction held → Abort cleans strategy → Success reported early; Start abort cleanup → Retain held operation → Finish after resolution](shutdown-diagrams/images/V02.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `abortDoesNotCertifyTerminationWhileConstructionIsOwned`.
 
@@ -100,7 +100,7 @@ operations.removeIf(operation -> operation.registered
         && operation.resolved && operation.result.isDone());
 ```
 
-![Response mapping outlives graceful drain: Transport response ready → Result mapping held → Close misses mapping; Track public operation → Finish mapping → Publish result](diagrams/images/V03.png)
+![Response mapping outlives graceful drain: Transport response ready → Result mapping held → Close misses mapping; Track public operation → Finish mapping → Publish result](shutdown-diagrams/images/V03.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `responseMappingRemainsOwnedUntilPublicResultIsPublished`.
 
@@ -117,7 +117,7 @@ result.cancel(false);
 // Ownership remains until internal resolution.
 ```
 
-![Cancelling the public result hides transport work: Caller cancels result → Future is done → Transport still pending; Keep internal state → Wait for resolution → Then remove ownership](diagrams/images/V04.png)
+![Cancelling the public result hides transport work: Caller cancels result → Future is done → Transport still pending; Keep internal state → Wait for resolution → Then remove ownership](shutdown-diagrams/images/V04.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `cancelledPublicResultDoesNotDischargeTransportOwnership`.
 
@@ -138,7 +138,7 @@ catch (Throwable failure) {
 }
 ```
 
-![A construction exception strands admission: Admit request → Construction throws → Admission stranded; Publish failure → Run finally cleanup → Release admission](diagrams/images/V05.png)
+![A construction exception strands admission: Admit request → Construction throws → Admission stranded; Publish failure → Run finally cleanup → Release admission](shutdown-diagrams/images/V05.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `constructionFailureDischargesAdmission`.
 
@@ -155,7 +155,7 @@ while (draining.getAsBoolean() && inflight.get() > 0)
     Thread.sleep(10);
 ```
 
-![Abort cannot interrupt a graceful drain: Graceful drain waits → Second caller aborts → Drain keeps waiting; Share shutdown state → Observe ABORTING → Proceed to cleanup](diagrams/images/V06.png)
+![Abort cannot interrupt a graceful drain: Graceful drain waits → Second caller aborts → Drain keeps waiting; Share shutdown state → Observe ABORTING → Proceed to cleanup](shutdown-diagrams/images/V06.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `abortEscalatesWhileRealStrategyIsDraining`, `repeatedCloseSharesCleanupAndAllowsEscalation`.
 
@@ -173,7 +173,7 @@ ShutdownHandle handle = client.closeAsync(false);
 handle.await();
 ```
 
-![A progress thread waits for its own shutdown: Callback calls close → Shutdown needs callback → Self-dependent wait; Initiate closeAsync → Reject local blocking wait → Await independently](diagrams/images/V07.png)
+![A progress thread waits for its own shutdown: Callback calls close → Shutdown needs callback → Self-dependent wait; Initiate closeAsync → Reject local blocking wait → Await independently](shutdown-diagrams/images/V07.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `callbackWaitIsRejectedWhileShutdownContinues`, `cleanupCannotWaitForItsOwnTermination`, `dispatcherCannotWaitForShutdownItMustProgress`, `resultPolicyCannotWaitForShutdownItMustProgress`.
 
@@ -192,7 +192,7 @@ if (destroyed.compareAndSet(false, true)) {
 destruction.join();
 ```
 
-![A second destroy returns before cleanup finishes: First destroy blocks → Second sees started flag → Second returns early; One cleanup owner → Shared destruction result → Both callers wait](diagrams/images/V08.png)
+![A second destroy returns before cleanup finishes: First destroy blocks → Second sees started flag → Second returns early; One cleanup owner → Shared destruction result → Both callers wait](shutdown-diagrams/images/V08.png)
 
 Evidence: [HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `concurrentDestroyWaitsForTransportCleanup`, `transportCleanupFailureDoesNotLeaveResultWorkerRunning`.
 
@@ -210,7 +210,7 @@ handle.await(); // Throws FeedException on cleanup failure.
 // handle.snapshot().failure() retains the cause.
 ```
 
-![A cleanup failure disappears for later callers: Cleanup throws → First caller sees error → Later caller misses it; Retain failure → Publish FAILED → Late wait reports error](diagrams/images/V09.png)
+![A cleanup failure disappears for later callers: Cleanup throws → First caller sees error → Later caller misses it; Retain failure → Publish FAILED → Late wait reports error](shutdown-diagrams/images/V09.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `cleanupFailureRemainsObservableToLateWaiters`.
 
@@ -231,7 +231,7 @@ try {
 }
 ```
 
-![Transport close skips worker cleanup when it throws: Transport close throws → Next cleanup skipped → Worker left alive; Attempt transport close → Always shut down workers → Keep failure visible](diagrams/images/V10.png)
+![Transport close skips worker cleanup when it throws: Transport close throws → Next cleanup skipped → Worker left alive; Attempt transport close → Always shut down workers → Keep failure visible](shutdown-diagrams/images/V10.png)
 
 Evidence: [HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `transportCleanupFailureDoesNotLeaveResultWorkerRunning`, `transportCleanupFailureDoesNotLeaveResetAccountingWorkerRunning`.
 
@@ -255,7 +255,7 @@ try {
 }
 ```
 
-![Cleanup waits while holding the accounting monitor: Close holds monitor → Waits for accounting task → Task needs monitor; Request executor shutdown → Release monitor → Then await termination](diagrams/images/V11.png)
+![Cleanup waits while holding the accounting monitor: Close holds monitor → Waits for accounting task → Task needs monitor; Request executor shutdown → Release monitor → Then await termination](shutdown-diagrams/images/V11.png)
 
 Evidence: [HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `testResettingCluster`, `testShutdown`. Source-order correction; dedicated regression pending.
 
@@ -273,7 +273,7 @@ if (Thread.currentThread() != dispatcher)
     dispatcher.join();
 ```
 
-![Success is reported before dispatcher exit: Dispatcher paused → Resources close → Success reported early; Finish shared cleanup → Join dispatcher → Then report success](diagrams/images/V12.png)
+![Success is reported before dispatcher exit: Dispatcher paused → Resources close → Success reported early; Finish shared cleanup → Join dispatcher → Then report success](shutdown-diagrams/images/V12.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `successfulTerminationWaitsForDispatcherExit`.
 
@@ -293,7 +293,7 @@ if (!acquireSlot()) {
 }
 ```
 
-![A capacity waiter resumes after abort: Waiter registered → Abort runs cleanup → Waiter acquires slot; Observe abort → Remove registration → Do not offer request](diagrams/images/V13.png)
+![A capacity waiter resumes after abort: Waiter registered → Abort runs cleanup → Waiter acquires slot; Observe abort → Remove registration → Do not offer request](shutdown-diagrams/images/V13.png)
 
 Evidence: [HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `capacityWaiterCannotAcquireOrOfferAfterAbort`.
 
@@ -313,7 +313,7 @@ private boolean poll() {
 }
 ```
 
-![The dispatch loop sends queued work after abort: First dispatch held → Abort starts → Loop sends next request; First dispatch returns → Check abort before poll → Leave queued work unsent](diagrams/images/V14.png)
+![The dispatch loop sends queued work after abort: First dispatch held → Abort starts → Loop sends next request; First dispatch returns → Check abort before poll → Leave queued work unsent](shutdown-diagrams/images/V14.png)
 
 Evidence: [HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `abortDoesNotDispatchQueuedRequestsAfterBlockedDispatchReturns`.
 
@@ -331,7 +331,7 @@ handle.await(Duration.ofMillis(50));
 // Timeout ends this wait, not shared shutdown.
 ```
 
-![An observer interferes with shared shutdown: Observer waits → Timeout or interruption → Shared cleanup at risk; End only this wait → Keep shared shutdown → Other observers continue](diagrams/images/V15.png)
+![An observer interferes with shared shutdown: Observer waits → Timeout or interruption → Shared cleanup at risk; End only this wait → Keep shared shutdown → Other observers continue](shutdown-diagrams/images/V15.png)
 
 Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `observationDoesNotInitiateAndTimeoutDoesNotClose`, `interruptedObserverDoesNotInterruptSharedShutdown`.
 
@@ -349,7 +349,7 @@ if (phase == Phase.TERMINATED && outstandingOperations != 0)
         "Successful termination cannot retain outstanding operations");
 ```
 
-![A snapshot reports contradictory state: Snapshot says TERMINATED → Outstanding work is 1 → Contradictory report; Validate phase and counts → Reject contradiction → Expose consistent snapshot](diagrams/images/V16.png)
+![A snapshot reports contradictory state: Snapshot says TERMINATED → Outstanding work is 1 → Contradictory report; Validate phase and counts → Reject contradiction → Expose consistent snapshot](shutdown-diagrams/images/V16.png)
 
 Evidence: [ShutdownHandleTest](../../vespa-feed-client-api/src/test/java/ai/vespa/feed/client/ShutdownHandleTest.java): `snapshotRejectsContradictoryOutcomeAndOwnership`.
 
@@ -379,4 +379,4 @@ mvn -pl vespa-feed-client-api,vespa-feed-client,vespa-feed-client-cli -am test
 
 For individual ordering tests, use the method names beside each case. Keep the baseline failure, changed-version result and environment together. Extend the held-dependency cases with real HTTP delays, connection resets, same-ID chains and combined cleanup failures before treating this as ready for production.
 
-The [diagram instructions](diagrams/README.md) reproduce the compact PNGs from their p5.js source.
+The [diagram instructions](shutdown-diagrams/README.md) reproduce the compact PNGs from their p5.js source.
