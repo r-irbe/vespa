@@ -24,7 +24,9 @@ A request can belong to the client before it has a strategy slot. It can also re
 
 Snippets are shortened Java excerpts or API examples. Comments omit surrounding code; they are not standalone programs. Each case links to the test source and names the relevant methods. Latches and controlled dependencies force the important ordering. Timeouts bound waits and detect hangs; timing-sensitive checks still need reruns on the maintainer’s environment.
 
-The implementation record reports 52 passing API/client/CLI module tests and two detected mutations: dropping internal-resolution ownership, and allowing abort to revert to graceful drain. The generated lifecycle test uses 64 fixed seeds with 100 commands each and prints the history on failure. Those are recorded component results, not new executions for this documentation update or a full Vespa validation result.
+The affected API/client/CLI reactor passed all 52 tests on JDK 17, including the normal install-phase ABI and packaging checks. The archive timestamp was set explicitly to a valid reproducible value. The test refactor uses JUnit parameterization for both progress-thread contexts, bounded future completion for callback assertions and shared latch/clock fixtures. The public API additions are recorded in the ABI specification.
+
+The generated lifecycle test uses 64 fixed seeds with 100 commands each and prints the history on failure. Earlier mutation checks caught dropped internal-resolution ownership and abort reverting to graceful drain. These are component results; full Vespa integration and impact measurements remain outstanding.
 
 ## Failure-mode table
 
@@ -175,7 +177,7 @@ handle.await();
 
 ![A progress thread waits for its own shutdown: Callback calls close → Shutdown needs callback → Self-dependent wait; Initiate closeAsync → Reject local blocking wait → Await independently](shutdown-diagrams/images/V07.png)
 
-Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `callbackWaitIsRejectedWhileShutdownContinues`, `cleanupCannotWaitForItsOwnTermination`, `dispatcherCannotWaitForShutdownItMustProgress`, `resultPolicyCannotWaitForShutdownItMustProgress`.
+Evidence: [HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `callbackWaitIsRejectedWhileShutdownContinues`, `cleanupCannotWaitForItsOwnTermination`, `strategyProgressThreadCannotWaitForShutdown` (both dispatcher and result-policy parameters).
 
 <a id="v08"></a>
 

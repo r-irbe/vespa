@@ -34,6 +34,7 @@ import static ai.vespa.feed.client.FeedClient.CircuitBreaker.State.CLOSED;
 import static ai.vespa.feed.client.FeedClient.CircuitBreaker.State.HALF_OPEN;
 import static ai.vespa.feed.client.FeedClient.CircuitBreaker.State.OPEN;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static ai.vespa.feed.client.impl.ShutdownTestSupport.awaitLatch;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -48,12 +49,10 @@ class HttpRequestStrategyTest {
         // A CAS-only destroy lets another caller report success before transport cleanup finishes.
         CountDownLatch closeEntered = new CountDownLatch(1);
         CountDownLatch releaseClose = new CountDownLatch(1);
-        Cluster cluster = new Cluster() {
-            @Override public void dispatch(HttpRequest request, CompletableFuture<HttpResponse> vessel) { }
+        MockCluster cluster = new MockCluster() {
             @Override public void close() {
                 closeEntered.countDown();
-                try { assertTrue(releaseClose.await(10, TimeUnit.SECONDS)); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                awaitLatch(releaseClose);
             }
         };
         HttpRequestStrategy strategy = new HttpRequestStrategy(
@@ -114,8 +113,7 @@ class HttpRequestStrategyTest {
             @Override public void dispatch(HttpRequest request, CompletableFuture<HttpResponse> vessel) {
                 if (dispatched.incrementAndGet() == 1) {
                     dispatchEntered.countDown();
-                    try { assertTrue(releaseDispatch.await(10, TimeUnit.SECONDS)); }
-                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                    awaitLatch(releaseDispatch);
                 } else extraDispatch.countDown();
                 vessel.completeExceptionally(new FeedException("injected transport stop"));
             }
@@ -204,8 +202,7 @@ class HttpRequestStrategyTest {
             @Override public long targetInflight() {
                 if (Thread.currentThread() == waiterThread.get() && pause.compareAndSet(true, false)) {
                     capacityEntered.countDown();
-                    try { assertTrue(releaseCapacity.await(10, TimeUnit.SECONDS)); }
-                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                    awaitLatch(releaseCapacity);
                 }
                 return 2;
             }

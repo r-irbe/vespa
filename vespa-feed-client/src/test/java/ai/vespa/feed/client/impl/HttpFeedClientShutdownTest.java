@@ -10,6 +10,8 @@ import ai.vespa.feed.client.Result;
 import ai.vespa.feed.client.ShutdownHandle;
 import ai.vespa.feed.client.FeedException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.URI;
 import java.time.Duration;
@@ -24,6 +26,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static ai.vespa.feed.client.impl.ShutdownTestSupport.awaitLatch;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -38,17 +42,9 @@ class HttpFeedClientShutdownTest {
         CountDownLatch constructing = new CountDownLatch(1);
         CountDownLatch resumeConstruction = new CountDownLatch(1);
         AtomicReference<Thread> submittingThread = new AtomicReference<>();
-        AtomicBoolean pause = new AtomicBoolean(true);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         ImmediateStrategy strategy = new ImmediateStrategy();
-        FeedClientBuilderImpl builder = new FeedClientBuilderImpl(List.of(URI.create("https://dummy:123")))
-                .setNanoClock(() -> {
-                    if (Thread.currentThread() == submittingThread.get() && pause.compareAndSet(true, false)) {
-                        constructing.countDown();
-                        await(resumeConstruction);
-                    }
-                    return 0;
-                });
+        FeedClientBuilderImpl builder = constructionPausedOn(submittingThread, constructing, resumeConstruction);
         FeedClient client = new HttpFeedClient(builder, DryrunCluster::new, strategy);
         AtomicReference<CompletableFuture<Result>> result = new AtomicReference<>();
         Thread sender = new Thread(() -> {
@@ -94,19 +90,11 @@ class HttpFeedClientShutdownTest {
         CountDownLatch resumeConstruction = new CountDownLatch(1);
         CountDownLatch destroyed = new CountDownLatch(1);
         AtomicReference<Thread> submittingThread = new AtomicReference<>();
-        AtomicBoolean pause = new AtomicBoolean(true);
         AtomicReference<Throwable> submissionFailure = new AtomicReference<>();
         ImmediateStrategy strategy = new ImmediateStrategy() {
             @Override public void destroy() { super.destroy(); destroyed.countDown(); }
         };
-        FeedClientBuilderImpl builder = new FeedClientBuilderImpl(List.of(URI.create("https://dummy:123")))
-                .setNanoClock(() -> {
-                    if (Thread.currentThread() == submittingThread.get() && pause.compareAndSet(true, false)) {
-                        constructing.countDown();
-                        await(resumeConstruction);
-                    }
-                    return 0;
-                });
+        FeedClientBuilderImpl builder = constructionPausedOn(submittingThread, constructing, resumeConstruction);
         FeedClient client = new HttpFeedClient(builder, DryrunCluster::new, strategy);
         Thread sender = new Thread(() -> {
             submittingThread.set(Thread.currentThread());
@@ -151,7 +139,7 @@ class HttpFeedClientShutdownTest {
             @Override public void destroy() {
                 cleanupCalls.incrementAndGet();
                 cleanupEntered.countDown();
-                HttpFeedClientShutdownTest.await(resumeCleanup);
+                awaitLatch(resumeCleanup);
                 super.destroy();
             }
         };
@@ -184,7 +172,7 @@ class HttpFeedClientShutdownTest {
         });
         clientReference.set(client);
         client.closeAsync(true).await(Duration.ofSeconds(10));
-        assertTrue(observed.get() instanceof IllegalStateException,
+        assertInstanceOf(IllegalStateException.class, observed.get(),
                    "cleanup must reject self-wait, observed: " + observed.get());
         assertEquals(ShutdownHandle.Phase.TERMINATED, client.termination().snapshot().phase());
     }
@@ -237,7 +225,7 @@ class HttpFeedClientShutdownTest {
         FeedClient client = newClient(new ImmediateStrategy() {
             @Override public void destroy() {
                 cleanupEntered.countDown();
-                HttpFeedClientShutdownTest.await(releaseCleanup);
+                awaitLatch(releaseCleanup);
                 super.destroy();
             }
         });
@@ -253,7 +241,7 @@ class HttpFeedClientShutdownTest {
             observer.interrupt();
             observer.join(10000);
             assertFalse(observer.isAlive());
-            assertTrue(interruption.get() instanceof InterruptedException);
+            assertInstanceOf(InterruptedException.class, interruption.get());
             assertEquals(ShutdownHandle.Phase.DRAINING, handle.snapshot().phase());
         } finally {
             releaseCleanup.countDown();
@@ -262,17 +250,9 @@ class HttpFeedClientShutdownTest {
         assertEquals(ShutdownHandle.Phase.TERMINATED, handle.snapshot().phase());
     }
 
-    @Test
-    void dispatcherCannotWaitForShutdownItMustProgress() throws Exception {
-        verifyStrategyProgressWaitRejected(true);
-    }
-
-    @Test
-    void resultPolicyCannotWaitForShutdownItMustProgress() throws Exception {
-        verifyStrategyProgressWaitRejected(false);
-    }
-
-    private void verifyStrategyProgressWaitRejected(boolean fromDispatch) throws Exception {
+    @ParameterizedTest(name = "progress wait from dispatcher={0}")
+    @ValueSource(booleans = {true, false})
+    void strategyProgressThreadCannotWaitForShutdown(boolean fromDispatch) throws Exception {
         // Without identity-based strategy guards, transport/policy callbacks can self-deadlock.
         AtomicReference<FeedClient> clientReference = new AtomicReference<>();
         AtomicReference<Throwable> observed = new AtomicReference<>();
@@ -296,7 +276,7 @@ class HttpFeedClientShutdownTest {
             assertEquals(Result.Type.success,
                          client.remove(DocumentId.of("ns", "type", "1"), OperationParameters.empty())
                                .get(10, TimeUnit.SECONDS).type());
-            assertTrue(observed.get() instanceof IllegalStateException,
+            assertInstanceOf(IllegalStateException.class, observed.get(),
                        "strategy progress thread must reject self-wait, observed: " + observed.get());
         } finally { client.closeAsync(false).await(Duration.ofSeconds(10)); }
     }
@@ -312,7 +292,7 @@ class HttpFeedClientShutdownTest {
                 .setCircuitBreaker(() -> {
                     if (Thread.currentThread() == dispatcher.get() && pause.compareAndSet(true, false)) {
                         dispatcherPaused.countDown();
-                        await(resumeDispatcher);
+                        awaitLatch(resumeDispatcher);
                     }
                     return FeedClient.CircuitBreaker.State.CLOSED;
                 });
@@ -365,7 +345,7 @@ class HttpFeedClientShutdownTest {
             @Override public int code() { return 200; }
             @Override public byte[] body() {
                 mappingEntered.countDown();
-                HttpFeedClientShutdownTest.await(resumeMapping);
+                awaitLatch(resumeMapping);
                 return "{\"message\":\"accepted\"}".getBytes(UTF_8);
             }
         }));
@@ -400,23 +380,17 @@ class HttpFeedClientShutdownTest {
         CountDownLatch resumeCleanup = new CountDownLatch(1);
         FeedClient client = newClient(new ImmediateStrategy() {
             @Override public CompletableFuture<HttpResponse> enqueue(DocumentId id, HttpRequest request) { return response; }
-            @Override public void destroy() { cleanupEntered.countDown(); HttpFeedClientShutdownTest.await(resumeCleanup); }
+            @Override public void destroy() { cleanupEntered.countDown(); awaitLatch(resumeCleanup); }
         });
-        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
         CompletableFuture<Result> result = client.remove(DocumentId.of("ns", "type", "1"), OperationParameters.empty());
-        result.thenRun(() -> {
-            try { client.close(); }
-            catch (Throwable t) { callbackFailure.set(t); }
-        });
+        CompletableFuture<Void> callback = result.thenRun(() ->
+                assertThrows(IllegalStateException.class, client::close,
+                             "callback must not block waiting for its own lifecycle"));
         Thread completing = new Thread(() -> response.complete(HttpResponse.of(200, "{}".getBytes(UTF_8))));
         completing.start();
         try {
             assertTrue(cleanupEntered.await(10, TimeUnit.SECONDS));
-            long limit = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-            while (completing.isAlive() && completing.getState() != Thread.State.WAITING && System.nanoTime() < limit)
-                Thread.yield();
-            assertTrue(callbackFailure.get() instanceof IllegalStateException,
-                       "callback must not block waiting for its own lifecycle");
+            callback.get(10, TimeUnit.SECONDS);
         } finally {
             resumeCleanup.countDown();
             completing.join(10000);
@@ -464,13 +438,17 @@ class HttpFeedClientShutdownTest {
         return new HttpFeedClient(new FeedClientBuilderImpl(List.of(URI.create("https://dummy:123"))), DryrunCluster::new, strategy);
     }
 
-    private static void await(CountDownLatch latch) {
-        try {
-            if (!latch.await(10, TimeUnit.SECONDS)) throw new AssertionError("construction was not released");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError(e);
-        }
+    private static FeedClientBuilderImpl constructionPausedOn(AtomicReference<Thread> submittingThread,
+                                                               CountDownLatch constructing,
+                                                               CountDownLatch resumeConstruction) {
+        AtomicBoolean pause = new AtomicBoolean(true);
+        return new FeedClientBuilderImpl(List.of(URI.create("https://dummy:123"))).setNanoClock(() -> {
+            if (Thread.currentThread() == submittingThread.get() && pause.compareAndSet(true, false)) {
+                constructing.countDown();
+                awaitLatch(resumeConstruction);
+            }
+            return 0;
+        });
     }
 
     private static class ImmediateStrategy implements RequestStrategy {
