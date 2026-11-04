@@ -1,6 +1,8 @@
 # PR rationale and evidence checklist: feed-client shutdown
 
 Status: prospective PR material. Do not paste unverified claims as results.
+
+The [reviewer guide](../../feed-client-shutdown/FAILURE-MODES.md) covers the implemented Java changes with test references and compact diagrams.
 Design: 2026-11-03-feed-client-shutdown-design.md.
 
 ## Why a change is needed

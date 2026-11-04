@@ -1,0 +1,322 @@
+[
+  {
+    "id": "V01",
+    "title": "Close overtakes admitted request construction",
+    "status": "Changed in this branch",
+    "issue": "A send can pass the open check and pause while constructing its request. Graceful close could drain an empty strategy and destroy it before that send registers.",
+    "change": "Admit under the lifecycle monitor before construction. Graceful shutdown waits for admitted construction before draining the strategy.",
+    "code": "ShutdownLifecycle.Operation operation = lifecycle.admit();\ntry {\n    // Construct and enqueue the request.\n} finally {\n    lifecycle.registered(operation);\n}",
+    "language": "java",
+    "before": [
+      "Send passes open check",
+      "Construction pauses",
+      "Close destroys strategy"
+    ],
+    "after": [
+      "Record admission",
+      "Wait for registration",
+      "Then drain strategy"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `gracefulCloseWaitsForAdmittedConstruction`."
+  },
+  {
+    "id": "V02",
+    "title": "Abort reports completion while construction is held",
+    "status": "Changed in this branch",
+    "issue": "Abort should start cleanup promptly, but held request construction still belongs to the client. Reporting successful termination at that point loses track of it.",
+    "change": "Start abort cleanup without waiting for construction, then wait for outstanding operations before publishing successful termination. A failed cleanup remains FAILED, not a claim of release.",
+    "code": "requestStrategy.destroy();\nif (failure == null)\n    lifecycle.awaitOperations(() -> true);\nlifecycle.finish(failure);",
+    "language": "java",
+    "before": [
+      "Construction held",
+      "Abort cleans strategy",
+      "Success reported early"
+    ],
+    "after": [
+      "Start abort cleanup",
+      "Retain held operation",
+      "Finish after resolution"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `abortDoesNotCertifyTerminationWhileConstructionIsOwned`."
+  },
+  {
+    "id": "V03",
+    "title": "Response mapping outlives graceful drain",
+    "status": "Changed in this branch",
+    "issue": "The transport response can be ready while conversion to the public Result is still blocked. Strategy counters alone do not cover that work.",
+    "change": "Retain the operation through internal resolution and public result publication. This does not promise to wait for arbitrary user continuations on caller-owned threads.",
+    "code": "operations.removeIf(operation -> operation.registered\n        && operation.resolved && operation.result.isDone());",
+    "language": "java",
+    "before": [
+      "Transport response ready",
+      "Result mapping held",
+      "Close misses mapping"
+    ],
+    "after": [
+      "Track public operation",
+      "Finish mapping",
+      "Publish result"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `responseMappingRemainsOwnedUntilPublicResultIsPublished`."
+  },
+  {
+    "id": "V04",
+    "title": "Cancelling the public result hides transport work",
+    "status": "Changed in this branch",
+    "issue": "A caller can cancel its result before the underlying transport operation resolves. Using only isDone would remove that operation too early.",
+    "change": "Require internal resolution as well as public completion before dropping ownership. Cancellation of the public future does not itself stop the transport.",
+    "code": "result.cancel(false);\n// Ownership remains until internal resolution.",
+    "language": "java",
+    "before": [
+      "Caller cancels result",
+      "Future is done",
+      "Transport still pending"
+    ],
+    "after": [
+      "Keep internal state",
+      "Wait for resolution",
+      "Then remove ownership"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `cancelledPublicResultDoesNotDischargeTransportOwnership`."
+  },
+  {
+    "id": "V05",
+    "title": "A construction exception strands admission",
+    "status": "Changed in this branch",
+    "issue": "If request construction throws after admission, a missing discharge would leave shutdown waiting on work that will never register.",
+    "change": "Publish the failure and run registration cleanup in finally, including synchronous failures.",
+    "code": "catch (Throwable failure) {\n    operation.publish(null, failure);\n    throw failure;\n} finally {\n    lifecycle.registered(operation);\n}",
+    "language": "java",
+    "before": [
+      "Admit request",
+      "Construction throws",
+      "Admission stranded"
+    ],
+    "after": [
+      "Publish failure",
+      "Run finally cleanup",
+      "Release admission"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `constructionFailureDischargesAdmission`."
+  },
+  {
+    "id": "V06",
+    "title": "Abort cannot interrupt a graceful drain",
+    "status": "Changed in this branch",
+    "issue": "A later abort request could leave the first closer waiting in an unconditional graceful drain. Repeated graceful requests must also not reverse an abort.",
+    "change": "Share the lifecycle state and let the drain loop observe escalation. Only the first request starts cleanup.",
+    "code": "while (draining.getAsBoolean() && inflight.get() > 0)\n    Thread.sleep(10);",
+    "language": "java",
+    "before": [
+      "Graceful drain waits",
+      "Second caller aborts",
+      "Drain keeps waiting"
+    ],
+    "after": [
+      "Share shutdown state",
+      "Observe ABORTING",
+      "Proceed to cleanup"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `abortEscalatesWhileRealStrategyIsDraining`, `repeatedCloseSharesCleanupAndAllowsEscalation`."
+  },
+  {
+    "id": "V07",
+    "title": "A progress thread waits for its own shutdown",
+    "status": "Changed in this branch",
+    "issue": "A result callback, cleanup owner, dispatcher or result-policy callback can block on shutdown that needs that same thread to continue.",
+    "change": "Reject a blocking wait from known progress-owning threads while shutdown is unfinished. closeAsync initiates shutdown without waiting; an independent thread can await the shared handle.",
+    "code": "ShutdownHandle handle = client.closeAsync(false);\n// On an independent thread:\nhandle.await();",
+    "language": "java",
+    "before": [
+      "Callback calls close",
+      "Shutdown needs callback",
+      "Self-dependent wait"
+    ],
+    "after": [
+      "Initiate closeAsync",
+      "Reject local blocking wait",
+      "Await independently"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `callbackWaitIsRejectedWhileShutdownContinues`, `cleanupCannotWaitForItsOwnTermination`, `dispatcherCannotWaitForShutdownItMustProgress`, `resultPolicyCannotWaitForShutdownItMustProgress`."
+  },
+  {
+    "id": "V08",
+    "title": "A second destroy returns before cleanup finishes",
+    "status": "Changed in this branch",
+    "issue": "An atomic started flag prevents duplicate cleanup, but it does not make later callers wait for the first caller’s cleanup result.",
+    "change": "Keep one destruction result. Repeated callers join it and observe the same success or failure.",
+    "code": "if (destroyed.compareAndSet(false, true)) {\n    // Perform cleanup and complete destruction.\n}\ndestruction.join();",
+    "language": "java",
+    "before": [
+      "First destroy blocks",
+      "Second sees started flag",
+      "Second returns early"
+    ],
+    "after": [
+      "One cleanup owner",
+      "Shared destruction result",
+      "Both callers wait"
+    ],
+    "evidence": "[HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `concurrentDestroyWaitsForTransportCleanup`, `transportCleanupFailureDoesNotLeaveResultWorkerRunning`."
+  },
+  {
+    "id": "V09",
+    "title": "A cleanup failure disappears for later callers",
+    "status": "Changed in this branch",
+    "issue": "Without a retained outcome, a later observer can miss an earlier cleanup failure.",
+    "change": "Publish FAILED with the original cause. Repeated waits report that failure; FAILED does not mean every resource was released.",
+    "code": "ShutdownHandle handle = client.closeAsync(true);\nhandle.await(); // Throws FeedException on cleanup failure.\n// handle.snapshot().failure() retains the cause.",
+    "language": "java",
+    "before": [
+      "Cleanup throws",
+      "First caller sees error",
+      "Later caller misses it"
+    ],
+    "after": [
+      "Retain failure",
+      "Publish FAILED",
+      "Late wait reports error"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `cleanupFailureRemainsObservableToLateWaiters`."
+  },
+  {
+    "id": "V10",
+    "title": "Transport close skips worker cleanup when it throws",
+    "status": "Changed in this branch",
+    "issue": "A transport-close exception could skip shutdown of the result executor or the reset-accounting executor.",
+    "change": "Use finally blocks to attempt both executor cleanups even when transport close throws. The injected tests check that the captured workers exit and the failure remains visible.",
+    "code": "try {\n    cluster.close();\n} finally {\n    resultExecutor.shutdown();\n    // Wait for executor termination.\n}",
+    "language": "java",
+    "before": [
+      "Transport close throws",
+      "Next cleanup skipped",
+      "Worker left alive"
+    ],
+    "after": [
+      "Attempt transport close",
+      "Always shut down workers",
+      "Keep failure visible"
+    ],
+    "evidence": "[HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `transportCleanupFailureDoesNotLeaveResultWorkerRunning`, `transportCleanupFailureDoesNotLeaveResetAccountingWorkerRunning`."
+  },
+  {
+    "id": "V11",
+    "title": "Cleanup waits while holding the accounting monitor",
+    "status": "Changed; focused regression pending",
+    "issue": "Reset-accounting tasks need the same monitor that close previously held while awaiting their executor. That wait could prevent those tasks from finishing.",
+    "change": "Release the monitor before waiting for executor termination. Existing reset and shutdown tests exercise the surrounding path; this case still needs a dedicated ordered regression.",
+    "code": "try {\n    synchronized (monitor) {\n        try { delegate.close(); }\n        finally { executor.shutdown(); }\n    }\n} finally {\n    // Existing timeout and interruption handling omitted.\n    executor.awaitTermination(1, TimeUnit.MINUTES);\n}",
+    "language": "java",
+    "before": [
+      "Close holds monitor",
+      "Waits for accounting task",
+      "Task needs monitor"
+    ],
+    "after": [
+      "Request executor shutdown",
+      "Release monitor",
+      "Then await termination"
+    ],
+    "evidence": "[HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `testResettingCluster`, `testShutdown`. Source-order correction; dedicated regression pending."
+  },
+  {
+    "id": "V12",
+    "title": "Success is reported before dispatcher exit",
+    "status": "Changed in this branch",
+    "issue": "Closing shared resources does not establish that a dispatcher paused elsewhere has stopped.",
+    "change": "Join the dispatcher after shared cleanup on the successful path, avoiding self-join. The test holds the dispatcher, verifies the shutdown wait remains pending, then releases it.",
+    "code": "destruction.join();\nif (Thread.currentThread() != dispatcher)\n    dispatcher.join();",
+    "language": "java",
+    "before": [
+      "Dispatcher paused",
+      "Resources close",
+      "Success reported early"
+    ],
+    "after": [
+      "Finish shared cleanup",
+      "Join dispatcher",
+      "Then report success"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `successfulTerminationWaitsForDispatcherExit`."
+  },
+  {
+    "id": "V13",
+    "title": "A capacity waiter resumes after abort",
+    "status": "Changed; handoff races remain open",
+    "issue": "An operation registered before abort can be waiting for a slot. When capacity becomes available, it must not start new work after cleanup.",
+    "change": "Check the abort flag while waiting and again before acquisition. Discharge the unacquired registration when acquisition fails. The check and increment are still separate operations; broader interleavings remain to be checked.",
+    "code": "if (!acquireSlot()) {\n    inflightById.remove(documentId, result);\n    result.complete();\n    return result;\n}",
+    "language": "java",
+    "before": [
+      "Waiter registered",
+      "Abort runs cleanup",
+      "Waiter acquires slot"
+    ],
+    "after": [
+      "Observe abort",
+      "Remove registration",
+      "Do not offer request"
+    ],
+    "evidence": "[HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `capacityWaiterCannotAcquireOrOfferAfterAbort`."
+  },
+  {
+    "id": "V14",
+    "title": "The dispatch loop sends queued work after abort",
+    "status": "Changed in this branch",
+    "issue": "After a held dispatch returns, the inner loop could continue taking requests that were already queued when abort began.",
+    "change": "Check the abort flag before polling for the next queued request. The test holds the first dispatch, queues another, aborts, then checks that the queued request is not sent. This is not an atomic guarantee across a concurrent check-and-poll race.",
+    "code": "private boolean poll() {\n    if (destroyed.get()) return false;\n    Runnable task = queue.poll();\n    // Existing dispatch path follows.\n}",
+    "language": "java",
+    "before": [
+      "First dispatch held",
+      "Abort starts",
+      "Loop sends next request"
+    ],
+    "after": [
+      "First dispatch returns",
+      "Check abort before poll",
+      "Leave queued work unsent"
+    ],
+    "evidence": "[HttpRequestStrategyTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpRequestStrategyTest.java): `abortDoesNotDispatchQueuedRequestsAfterBlockedDispatchReturns`."
+  },
+  {
+    "id": "V15",
+    "title": "An observer interferes with shared shutdown",
+    "status": "New API contract and controls",
+    "issue": "A timeout or interruption should end only that caller’s wait. Observation should not initiate shutdown or cancel another caller’s cleanup.",
+    "change": "Expose a read-only shared handle. The blocking close wrapper restores the interrupt flag; independent observers can still await the same shutdown.",
+    "code": "ShutdownHandle handle = client.termination();\nhandle.await(Duration.ofMillis(50));\n// Timeout ends this wait, not shared shutdown.",
+    "language": "java",
+    "before": [
+      "Observer waits",
+      "Timeout or interruption",
+      "Shared cleanup at risk"
+    ],
+    "after": [
+      "End only this wait",
+      "Keep shared shutdown",
+      "Other observers continue"
+    ],
+    "evidence": "[HttpFeedClientShutdownTest](../../vespa-feed-client/src/test/java/ai/vespa/feed/client/impl/HttpFeedClientShutdownTest.java): `observationDoesNotInitiateAndTimeoutDoesNotClose`, `interruptedObserverDoesNotInterruptSharedShutdown`."
+  },
+  {
+    "id": "V16",
+    "title": "A snapshot reports contradictory state",
+    "status": "New API validation",
+    "issue": "A public snapshot could claim success while retaining outstanding work, or attach a failure to a non-failed phase.",
+    "change": "Validate phase, failure and ownership counts at construction. FAILED may retain outstanding work; TERMINATED may not.",
+    "code": "if (phase == Phase.TERMINATED && outstandingOperations != 0)\n    throw new IllegalArgumentException(\n        \"Successful termination cannot retain outstanding operations\");",
+    "language": "java",
+    "before": [
+      "Snapshot says TERMINATED",
+      "Outstanding work is 1",
+      "Contradictory report"
+    ],
+    "after": [
+      "Validate phase and counts",
+      "Reject contradiction",
+      "Expose consistent snapshot"
+    ],
+    "evidence": "[ShutdownHandleTest](../../vespa-feed-client-api/src/test/java/ai/vespa/feed/client/ShutdownHandleTest.java): `snapshotRejectsContradictoryOutcomeAndOwnership`."
+  }
+]
